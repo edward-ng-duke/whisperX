@@ -1,0 +1,83 @@
+# syntax=docker/dockerfile:1.7
+#
+# WhisperX private API — CUDA build.
+#
+# Two build targets:
+#   --target=base     -> code + python deps, no models. ~7 GB. Mount models at runtime.
+#   --target=bundled  -> base + COPY ./models into /app/models. ~55 GB. Fully self-contained.
+#
+# Default target = bundled (matches the brief: "完全的本地私有化部署").
+#
+# Examples:
+#   docker build -f Dockerfile.cuda --target=base    -t whisperx-private:cuda-base    .
+#   docker build -f Dockerfile.cuda --target=bundled -t whisperx-private:cuda-bundled .
+#   docker run --rm --gpus all -p 8000:8000 whisperx-private:cuda-bundled
+#   docker run --rm --gpus all -p 8000:8000 -v $PWD/models:/app/models whisperx-private:cuda-base
+
+ARG CUDA_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
+
+# ---------- Stage 1: code + python deps (no models) ----------
+FROM ${CUDA_IMAGE} AS base
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
+    PATH=/app/.venv/bin:/root/.local/bin:$PATH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.10 python3.10-venv python3-pip \
+        ffmpeg ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# uv pinned to match dev environment
+RUN curl -LsSf https://astral.sh/uv/install.sh | env INSTALLER_NO_MODIFY_PATH=1 sh \
+    && mv /root/.local/bin/uv /usr/local/bin/uv
+
+WORKDIR /app
+
+# Resolve project deps first so layer cache doesn't bust on code edits.
+# whisperx is a self-package referenced by pyproject — we must include the
+# directory before `uv sync`, even though it makes the cache slightly less
+# stable. Worth it for one-line builds.
+COPY pyproject.toml uv.lock README.md MANIFEST.in ./
+COPY whisperx/ ./whisperx/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
+
+# Extra API deps (FastAPI/uvicorn/python-multipart/python-dotenv)
+COPY deploy/requirements-api.txt ./deploy/requirements-api.txt
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install -r deploy/requirements-api.txt
+
+# Copy the rest of deploy/ (server.py, pipeline.py, schemas.py, scripts, docs)
+COPY deploy/ ./deploy/
+
+# Offline + cache locations. Server reads these at module import.
+ENV HF_HOME=/app/models/hf \
+    HUGGINGFACE_HUB_CACHE=/app/models/hf/hub \
+    TORCH_HOME=/app/models/torch \
+    NLTK_DATA=/app/models/nltk_data \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    DEVICE=cuda \
+    COMPUTE_TYPE=float16 \
+    WHISPER_MODEL=small \
+    API_HOST=0.0.0.0 \
+    API_PORT=8000 \
+    LOG_LEVEL=INFO
+
+EXPOSE 8000
+
+# /health is cheap and doesn't load models.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:8000/health || exit 1
+
+CMD ["uvicorn", "deploy.api.server:app", "--host", "0.0.0.0", "--port", "8000"]
+
+
+# ---------- Stage 2: bundled — base + pre-downloaded models ----------
+FROM base AS bundled
+COPY models/ /app/models/

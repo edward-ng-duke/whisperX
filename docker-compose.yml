@@ -1,0 +1,53 @@
+# Two profiles: gpu (default) and cpu. Models are baked into the image (target=bundled)
+# so the container is self-contained — no host-mounted ./models needed.
+#
+# Usage:
+#   docker compose --profile gpu build           # build CUDA bundled image
+#   docker compose --profile gpu up              # run on GPU
+#   docker compose --profile cpu build           # build CPU bundled image
+#   docker compose --profile cpu up              # run on CPU
+#
+# To run the slim "base" images and mount ./models from host instead, see
+# deploy/README.md.
+
+services:
+  whisperx-gpu:
+    profiles: ["gpu"]
+    build:
+      context: .
+      dockerfile: Dockerfile.cuda
+      target: bundled
+    image: whisperx-private:cuda-bundled
+    container_name: whisperx-private-gpu
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      DEVICE: cuda
+      COMPUTE_TYPE: float16
+      WHISPER_MODEL: ${WHISPER_MODEL:-small}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  whisperx-cpu:
+    profiles: ["cpu"]
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+      target: bundled
+    image: whisperx-private:cpu-bundled
+    container_name: whisperx-private-cpu
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      DEVICE: cpu
+      COMPUTE_TYPE: int8
+      WHISPER_MODEL: ${WHISPER_MODEL:-tiny}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}

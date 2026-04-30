@@ -1,0 +1,81 @@
+# syntax=docker/dockerfile:1.7
+#
+# WhisperX private API — CPU-only build.
+#
+# Notes:
+# - Larger Whisper sizes (medium/large-*) are impractical on CPU. Defaults to "tiny".
+# - Diarization on CPU is ~10-30x slower than ASR; prefer running without --diarize
+#   unless you really need it.
+#
+# Same target structure as Dockerfile.cuda:
+#   --target=base     -> code + CPU torch, no models
+#   --target=bundled  -> base + COPY ./models  (default)
+#
+# Examples:
+#   docker build -f Dockerfile.cpu --target=bundled -t whisperx-private:cpu-bundled .
+#   docker run --rm -p 8000:8000 whisperx-private:cpu-bundled
+
+ARG PY_IMAGE=python:3.10-slim-bookworm
+
+# ---------- Stage 1: code + python deps ----------
+FROM ${PY_IMAGE} AS base
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
+    PATH=/app/.venv/bin:/root/.local/bin:$PATH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ffmpeg ca-certificates curl build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | env INSTALLER_NO_MODIFY_PATH=1 sh \
+    && mv /root/.local/bin/uv /usr/local/bin/uv
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock README.md MANIFEST.in ./
+COPY whisperx/ ./whisperx/
+
+# pyproject pins x86_64-linux torch to the CUDA index. We sync first (which gets
+# the CUDA wheel because that's what the lockfile says) then immediately replace
+# torch/torchaudio/torchvision with the CPU wheels. This is a band-aid; the cost
+# is one extra ~2 GB layer that we promptly overwrite.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev \
+ && uv pip install --reinstall --index-url https://download.pytorch.org/whl/cpu \
+        "torch~=2.8.0" "torchaudio~=2.8.0" "torchvision~=0.23.0"
+
+COPY deploy/requirements-api.txt ./deploy/requirements-api.txt
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install -r deploy/requirements-api.txt
+
+COPY deploy/ ./deploy/
+
+ENV HF_HOME=/app/models/hf \
+    HUGGINGFACE_HUB_CACHE=/app/models/hf/hub \
+    TORCH_HOME=/app/models/torch \
+    NLTK_DATA=/app/models/nltk_data \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    DEVICE=cpu \
+    COMPUTE_TYPE=int8 \
+    WHISPER_MODEL=tiny \
+    API_HOST=0.0.0.0 \
+    API_PORT=8000 \
+    LOG_LEVEL=INFO
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:8000/health || exit 1
+
+CMD ["uvicorn", "deploy.api.server:app", "--host", "0.0.0.0", "--port", "8000"]
+
+
+# ---------- Stage 2: bundled ----------
+FROM base AS bundled
+COPY models/ /app/models/
