@@ -1,0 +1,34 @@
+# BuildKit only ships paths referenced by COPY into the daemon, so leaving
+# models/ here is fine — base target won't transfer it; bundled target will.
+# We just deny the obviously useless or sensitive stuff.
+
+# VCS / CI
+.git/
+.github/
+
+# Python build / test caches
+.venv/
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/*.egg-info
+build/
+dist/
+
+# Local secrets — must never be in an image
+.env
+.env.local
+
+# Dev-only
+tests/
+figures/
+*.log
+
+# Docker artifacts (don't ship Dockerfiles inside the image)
+.dockerignore
+Dockerfile.cuda
+Dockerfile.cpu
+docker-compose.yml

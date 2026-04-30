@@ -169,3 +169,8 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Local deployment artifacts
+.env.local
+models/
+data/
