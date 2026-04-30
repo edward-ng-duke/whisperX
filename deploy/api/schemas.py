@@ -47,6 +47,10 @@ class HealthResponse(BaseModel):
     default_model: str
     models_root: str
     whisper_models_loaded_in_memory: list[str]
+    align_languages_loaded_in_memory: list[str] = Field(default_factory=list)
+    asr_cache_size: int = 0
+    align_cache_size: int = 0
+    cuda_memory: Optional[dict[str, int]] = None
 
 
 class ModelsResponse(BaseModel):
@@ -54,6 +58,19 @@ class ModelsResponse(BaseModel):
     align_languages_available: list[str]
     diarization_ready: bool
     default_model: str
+
+
+class UnloadRequest(BaseModel):
+    asr: bool = True
+    align: bool = True
+    diarize: bool = False
+
+
+class UnloadResponse(BaseModel):
+    asr: list[str]
+    align: list[str]
+    diarize: bool
+    cuda_memory: Optional[dict[str, int]] = None
 
 
 class ErrorResponse(BaseModel):

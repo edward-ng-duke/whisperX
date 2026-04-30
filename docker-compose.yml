@@ -27,6 +27,12 @@ services:
       COMPUTE_TYPE: float16
       WHISPER_MODEL: ${WHISPER_MODEL:-small}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Bound the GPU cache so multi-language / multi-size traffic does not
+      # grow VRAM monotonically. Each new align language adds 0.36–1.26 GB.
+      ASR_CACHE_SIZE: ${ASR_CACHE_SIZE:-2}
+      ALIGN_CACHE_SIZE: ${ALIGN_CACHE_SIZE:-1}
+      # Reduce caching-allocator fragmentation under long-running mixed loads.
+      PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
     deploy:
       resources:
         reservations:

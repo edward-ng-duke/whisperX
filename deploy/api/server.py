@@ -33,6 +33,8 @@ from deploy.api.schemas import (  # noqa: E402
     HealthResponse,
     ModelsResponse,
     TranscribeResponse,
+    UnloadRequest,
+    UnloadResponse,
 )
 
 logging.basicConfig(
@@ -50,6 +52,8 @@ async def lifespan(_app: FastAPI):
     logger.info("  DEVICE        = %s", pipeline.DEVICE)
     logger.info("  COMPUTE_TYPE  = %s", pipeline.COMPUTE_TYPE)
     logger.info("  WHISPER_MODEL = %s", pipeline.DEFAULT_WHISPER_MODEL)
+    logger.info("  ASR_CACHE_SIZE   = %d (LRU; oldest non-default size evicted)", pipeline.ASR_CACHE_SIZE)
+    logger.info("  ALIGN_CACHE_SIZE = %d (LRU; oldest language evicted)", pipeline.ALIGN_CACHE_SIZE)
     logger.info("  whisper sizes on disk: %s", pipeline.list_local_whisper_models())
     logger.info("  align languages on disk: %s", pipeline.list_local_align_languages())
     logger.info("  diarization ready: %s", pipeline.diarization_ready())
@@ -74,6 +78,26 @@ def health() -> HealthResponse:
         default_model=pipeline.DEFAULT_WHISPER_MODEL,
         models_root=str(pipeline.MODELS_ROOT),
         whisper_models_loaded_in_memory=sorted(pipeline._asr_models.keys()),
+        align_languages_loaded_in_memory=sorted(pipeline._align_models.keys()),
+        asr_cache_size=pipeline.ASR_CACHE_SIZE,
+        align_cache_size=pipeline.ALIGN_CACHE_SIZE,
+        cuda_memory=pipeline.cuda_memory_stats(),
+    )
+
+
+@app.post("/admin/unload", response_model=UnloadResponse)
+def unload(req: UnloadRequest | None = None) -> UnloadResponse:
+    """Drop cached models and call torch.cuda.empty_cache(). Operators can use
+    this to reclaim VRAM after long-running multi-language traffic without
+    restarting the container.
+    """
+    body = req or UnloadRequest()
+    result = pipeline.unload_models(asr=body.asr, align=body.align, diarize=body.diarize)
+    return UnloadResponse(
+        asr=result["asr"],  # type: ignore[arg-type]
+        align=result["align"],  # type: ignore[arg-type]
+        diarize=bool(result["diarize"]),
+        cuda_memory=pipeline.cuda_memory_stats(),
     )
 
 
